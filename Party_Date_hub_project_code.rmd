@@ -1,0 +1,1200 @@
+---
+title: "Party/Date hub project"
+author: "Flavio Passante"
+date: "22/07/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(igraph)
+library(plotly)
+library(ggplot2)
+library(reshape2)
+library(pheatmap)
+library(uwot)
+library(rgl)
+library(plyr)
+library(ggfortify)
+library(dplyr)
+
+```
+
+
+```{r, echo=FALSE}
+Ecoli_PPI <-read.table("511145.protein.physical.links.full.v11.0.txt", header=TRUE)
+head(as.data.frame(Ecoli_PPI))
+```
+    ```{r, echo =FALSE}
+    compendium <- load("Ecoli_compendium.RData")
+    colnames(A) <- c('GeneSymbol', 'Protein ID')
+    head(A)
+    ```
+    ```{r, echo=FALSE}
+    head(as.data.frame(ALL_FINAL_Nreads[,1:10]))
+    ```
+```{r, echo = FALSE}
+expression_data <- as.data.frame(t(ALL_FINAL_TPM))
+expression_data <- expression_data %>% select(- colnames(expression_data)[duplicated(colnames(expression_data))])
+head(expression_data[,1:10])
+```
+
+```{r echo=FALSE}
+#Creating a subdataset for filtering 
+minExp <- 0
+ECOEXP<-as.data.frame(cbind(Ecoli_PPI$protein1[Ecoli_PPI$experiments > minExp],
+                            Ecoli_PPI$protein2[Ecoli_PPI$experiments > minExp],
+                            Ecoli_PPI$experiments[Ecoli_PPI$experiments > minExp]))
+
+#rename columns 
+colnames(ECOEXP)<-c("Protein1","Protein2","Confidence")
+ECOEXP$Confidence<-as.numeric(ECOEXP$Confidence)
+p <- ggplot(ECOEXP, aes(x=Confidence)) +
+  geom_histogram(aes(y = ..density..), color = '#000000', fill ='#0099F8') +
+  geom_density(color = '#000000', fill = '#F85700', alpha = 0.6) +
+  labs(
+    title = 'Protein-Protein Interactions Confidence',
+    subtitle = 'E.coli',
+    x = 'Confidence',
+    y = 'Density') + 
+  theme_classic() +
+  theme(
+    plot.title = element_text(color = "#0099F8", size = 16, face = 'bold'),
+    plot.subtitle = element_text(size = 10, face = "bold"),
+    plot.caption = element_text(face = "italic")
+    )
+p
+
+```
+
+```{r}
+#change min_exp and plot
+minExp <- 600
+ECOEXP_hq <-as.data.frame(cbind(Ecoli_PPI$protein1[Ecoli_PPI$experiments>minExp],
+                            Ecoli_PPI$protein2[Ecoli_PPI$experiments>minExp],                        
+                            Ecoli_PPI$experiments[Ecoli_PPI$experiments>minExp]))
+colnames(ECOEXP_hq)<-c("Protein1","Protein2","Confidence")
+ECOEXP_hq$Confidence<-as.numeric(ECOEXP_hq$Confidence)
+
+```
+
+```{r, echo=FALSE}
+#verified interactions only
+eco_ppi_graph_hq <- graph.data.frame(ECOEXP_hq)
+eco_ppi_graph_hq <- simplify(eco_ppi_graph_hq) 
+eco_ppi_graph_hq
+```
+
+```{r}
+###define centrality measures for betweenness and degree
+
+eco_ppi_hq_betwennes <-betweenness(eco_ppi_graph_hq,directed=FALSE)
+
+eco_ppi_hq_degree<- degree(eco_ppi_graph_hq)
+
+### defining threshold  
+treshold <- 0.9 
+
+betwenness_treshold <-quantile(eco_ppi_hq_betwennes,treshold)
+
+degree_treshold <-quantile(eco_ppi_hq_degree,treshold)
+
+#categorize nodes 
+
+BH<-V(eco_ppi_graph_hq)$name[eco_ppi_hq_betwennes>=betwenness_treshold & eco_ppi_hq_degree>=degree_treshold]
+
+#non-bottleneck hubs (NBH)
+NBH<-V(eco_ppi_graph_hq)$name[eco_ppi_hq_betwennes<betwenness_treshold & eco_ppi_hq_degree>=degree_treshold]
+
+#bottleneck non-hub (BNH)
+BNH<-V(eco_ppi_graph_hq)$name[eco_ppi_hq_betwennes>=betwenness_treshold & eco_ppi_hq_degree<degree_treshold]
+
+#non bottleneck non hubs NBNH
+NBNH<-V(eco_ppi_graph_hq)$name[eco_ppi_hq_betwennes<betwenness_treshold & eco_ppi_hq_degree<degree_treshold]
+
+```
+
+```{r}
+nodes_names <- c(BH, NBH, BNH, NBNH)
+stats_hq <- data.frame(row.names = nodes_names, 
+                    list(type = c(rep('BH', length(BH)),
+                                  rep('NBH', length(NBH)),
+                                  rep('BNH', length(BNH)),
+                                  rep('NBNH', length(NBNH))),
+                    betwenness = eco_ppi_hq_betwennes[nodes_names],
+                    degree = eco_ppi_hq_degree[nodes_names]))
+                    
+centralities <- cbind(stats_hq$degree, stats_hq$betwenness)
+```
+
+```{r}
+#calculate the mean for each group and for each stat
+mean_deg <- ddply(stats_hq, 'type', summarise, grp.mean_deg = mean(degree))
+mean_bet <- ddply(stats_hq, 'type', summarise, grp.mean_bet = mean(betwenness))
+
+degree_distr <- ggplot(stats_hq, aes(x=degree, fill=type)) +
+  geom_density(alpha = 0.4)+
+  geom_vline(data=mean_deg, aes(xintercept=grp.mean_deg, color=type),
+             linetype="dashed") +
+  geom_vline(xintercept = degree_treshold, size = 1 ) +
+  geom_label(aes(x=degree_treshold +3, y = 0.8, label = paste('Degree treshold: ', degree_treshold))) +
+  xlab('Degree') +
+  ylab('Density') + labs(title = 'Type') + 
+  theme_light() + 
+  theme(legend.title = element_text(color = 'blue', size  = 10), legend.background = element_rect((fill = 'lightblue'), color = NA), ) 
+
+
+betwennes_distr <- ggplot(stats_hq, aes(x=betwenness, color=type)) +
+  geom_freqpoly() + 
+  geom_vline(xintercept = betwenness_treshold, size = 1) + 
+  geom_label(aes(x=betwenness_treshold + 800, y=350, label=paste('Betweennes treshold: ', betwenness_treshold))) +
+  xlab('Betwenennes') +
+  ylab('Density') + 
+  theme_light() +
+  theme(legend.title = element_text(color = 'blue', size  = 10), legend.background = element_rect((fill = 'lightblue'), color = NA), )
+
+
+degree_distr
+betwennes_distr
+
+```
+
+```{r}
+
+betweenness_violin <- ggplot(stats_hq, aes(x=type, y = betwenness, fill = type)) +
+                            geom_violin(outlier.shape = NA) + 
+  ylab('Betwenness') +
+  xlab('Type') +
+  theme_light()
+
+betweenness_violin
+                              
+```
+
+```{r, echo=FALSE}
+summary(factor(stats_hq$type))
+```
+
+```{r}
+#computing neighbors and retrieving neighbor genes for BH 
+BH_neighbors <- neighborhood(eco_ppi_graph_hq,1, BH)
+NBH_neighbors <- neighborhood(eco_ppi_graph_hq, 1, NBH)
+BNH_neighbors <- neighborhood(eco_ppi_graph_hq, 1, BNH)
+NBNH_neighbors <- neighborhood(eco_ppi_graph_hq, 1, NBNH)
+
+#remove hubs from BH neighbors
+for (i in 1:length(BH_neighbors)) {
+  BH_neighbors[[i]] <- BH_neighbors[[i]][BH_neighbors[[i]]$name != BH[i]]
+}
+
+#remove hubs from NBH neighbors
+for (i in 1:length(NBH_neighbors)) {
+  NBH_neighbors[[i]] <- NBH_neighbors[[i]][NBH_neighbors[[i]]$name != NBH[i]]
+}
+
+#remove hubs from BNH neighbors
+for (i in 1:length(BNH_neighbors)) {
+  BNH_neighbors[[i]] <- BNH_neighbors[[i]][BNH_neighbors[[i]]$name != BNH[i]]
+}
+
+#remove hubs from NBNH neighbors
+for (i in 1:length(NBNH_neighbors)) {
+  NBNH_neighbors[[i]] <- NBNH_neighbors[[i]][NBNH_neighbors[[i]]$name != NBNH[i]]
+}
+
+```
+
+```{r, include=FALSE}
+
+intervals <- seq(-1.05, 1.05, 0.1)
+spearmansBH<-matrix(0,ncol=length(intervals)-1,nrow=length(BH))
+
+#for each interval the number of correlations falling within are calculated and then normalized for the total number of correlation values
+for (i in 1:length(BH)) 
+{
+  extractedrows <- expression_data[,match(BH_neighbors[[i]]$name, colnames(expression_data))]
+  BH_expression <- expression_data[, which(BH[i] ==  colnames(expression_data))]
+  extractedrows <- extractedrows[BH_expression >= mean(BH_expression),]
+  spearmans <-cor(extractedrows, method = 'spearman')
+  spearmans <-spearmans[upper.tri(spearmans)]
+  h_BH<-hist(spearmans,breaks= intervals)
+  spearmansBH[i,]<-h_BH$counts/sum(h_BH$counts)
+}
+```
+
+```{r, echo = FALSE}
+colnames(spearmansBH)<- h_BH$mids
+pheatmap(spearmansBH,cluster_cols = FALSE, labels_row = BH, main = 'Spearman correlations between Bottleneck hub neighbors', display_numbers = T, fontsize_number = 6)
+```
+
+```{r, echo = FALSE}
+plot(h_BH$mids,colMeans(spearmansBH), xlab = 'Correlation', ylab = 'Value', main = 'Correlation in BH')
+points(h_BH$mids,colMeans(spearmansBH),pch = 19, col = "red")
+```
+
+```{r, include = FALSE}
+spearmansNBH<-matrix(0,ncol=length(intervals)-1,nrow=length(NBH_neighbors))
+for (i in 1:length(NBH_neighbors)) 
+{
+  extractedrows_NBH <- expression_data[,match(NBH_neighbors[[i]]$name, colnames(expression_data))]
+  NBH_expression <- expression_data[, which(NBH[i] ==  colnames(expression_data))] 
+  extractedrows_NBH <- extractedrows_NBH[NBH_expression >= mean(NBH_expression), ]
+  spearmans<-cor(extractedrows_NBH, method = 'spearman')
+  spearmans<-spearmans[upper.tri(spearmans)]
+  h_NBH<-hist(spearmans,breaks= intervals)
+  spearmansNBH[i,]<-h_NBH$counts/sum(h_NBH$counts)
+}
+
+```
+
+```{r, echo=FALSE}
+colnames(spearmansNBH)<-h_NBH$mids
+pheatmap(spearmansNBH,cluster_cols = FALSE, labels_row = NBH, main = 'Spearman correlations between Non-Bottleneck hub neighbors', display_numbers = T, fontsize_number = 6)
+```
+
+```{r, echo = FALSE}
+plot(h_NBH$mids,colMeans(spearmansNBH), main = 'Correlation in NBH', xlab = 'Correlation', ylab = 'Value')
+points(h_NBH$mids,colMeans(spearmansNBH),pch = 19, col = "lightblue")
+```
+
+```{r, include = FALSE}
+spearmansBNH<-matrix(0,ncol=length(intervals)-1,nrow=length(BNH_neighbors))
+for (i in 1:length(BNH_neighbors)) 
+{
+  extractedrows_BNH <- expression_data[,match(BNH_neighbors[[i]]$name, colnames(expression_data))]
+  BNH_expression <- expression_data[, which(BNH[i] ==  colnames(expression_data))] 
+  extractedrows_BNH <- extractedrows_BNH[BNH_expression >= mean(BNH_expression), ]
+  spearmans<-cor(extractedrows_BNH, method = 'spearman')
+  spearmans<-spearmans[upper.tri(spearmans)]
+  h_BNH<-hist(spearmans,breaks= intervals)
+  spearmansBNH[i,]<-h_BNH$counts/sum(h_BNH$counts)
+}
+```
+
+```{r, echo = FALSE}
+#check it visually
+colnames(spearmansBNH)<-h_BNH$mids
+pheatmap(spearmansBNH,cluster_cols = FALSE, labels_row = BNH,  main = 'Spearman correlations between Bottleneck non-hub neighbors', display_numbers = T, fontsize_number = 6)
+```
+
+```{r}
+#NBNH contains neighborhood with only one interactor. These can be removed 
+mask <- array()
+for (i in 1:length(NBNH_neighbors)) {
+  mask[i] <- length(NBNH_neighbors[[i]]) != 1
+}
+NBNH_neighbors <- NBNH_neighbors[mask]
+```
+
+```{r, include = FALSE}
+
+spearmansNBNH<-matrix(0,ncol=length(intervals)-1,nrow=length(NBNH_neighbors))
+for (i in 1:length(NBNH_neighbors)) 
+{
+  extractedrows_NBNH <- expression_data[,match(NBNH_neighbors[[i]]$name, colnames(expression_data))]
+  NBNH_expression <- expression_data[, which(NBNH[i] ==  colnames(expression_data))] 
+  extractedrows_NBNH <- extractedrows_NBNH[NBNH_expression >= mean(NBNH_expression), ]
+  spearmans<-cor(extractedrows_NBNH, method = 'spearman')
+  spearmans<-spearmans[upper.tri(spearmans)]
+  h_NBNH<-hist(spearmans,breaks= intervals)
+  spearmansNBNH[i,]<-h_NBNH$counts/sum(h_NBNH$counts)
+}
+
+
+```
+
+```{r, echo = FALSE}
+colnames(spearmansNBNH)<- h_NBNH$mids
+pheatmap(spearmansNBNH,cluster_cols = FALSE, labels_row = NBNH,  main = 'Spearman correlations between Bottleneck non-hub neighbors', display_numbers = T, fontsize_number = 6)
+```
+
+```{r}
+#we first create a dataframe that store the type, degree and betweenness values for each node
+nodes_names <- c(BH, NBH, BNH, NBNH)
+stats_hq <- data.frame(row.names = nodes_names, 
+                    list(type = c(rep('BH', length(BH)),
+                                  rep('NBH', length(NBH)),
+                                  rep('BNH', length(BNH)),
+                                  rep('NBNH', length(NBNH))),
+                    betwenness = eco_ppi_hq_betwennes[nodes_names],
+                    degree = eco_ppi_hq_degree[nodes_names]))
+                    
+centralities <- cbind(stats_hq$degree, stats_hq$betwenness)
+```
+
+```{r, include= FALSE}
+hubs_hq <- c(BH,NBH)
+hubs_neighbors_hq <- neighborhood(eco_ppi_graph_hq, 1, hubs_hq)
+corr_matr<- function (neighbors, method = 'spearman'){
+  extractedrows <- expression_data[, na.omit(match(neighbors$name[2:length(neighbors)], colnames(expression_data)))]
+  hubs_expression_hq <- expression_data[, which(neighbors$name[1] == colnames(expression_data))]
+  extractedrows <- extractedrows[hubs_expression_hq >= mean(hubs_expression_hq),]
+  correlations <- cor(extractedrows, method=method)
+  return(correlations)
+}
+
+spearmans_hubs_hq <- lapply(hubs_neighbors_hq, corr_matr, "spearman")
+spearmans_vector_hq <- lapply(spearmans_hubs_hq, function (matrix) {matrix[upper.tri(matrix)]})
+names(spearmans_vector_hq) <- hubs_hq
+
+
+```
+
+```{r, echo = FALSE}
+
+metrics_hq <- data.frame(list(hubs = hubs_hq), 
+                      type = stats_hq[hubs_hq, 'type'],
+                      meanSCC = sapply(spearmans_vector_hq, mean),
+                      varSCC = sapply(spearmans_vector_hq, var))
+
+ggplot(metrics_hq) + 
+  geom_density(aes(x=meanSCC, fill=type)) +
+  ggtitle("Mean SCC among interactors") + 
+  ylab("Density") + 
+  xlab("meanSCC") +
+  theme_light()
+```
+
+
+```{r}
+ggplot(metrics_hq) + 
+  geom_density(aes(x=varSCC, fill=type)) +
+  ggtitle("varSCC among interactors") + 
+  ylab("Density") + 
+  xlab("varSCC") +
+  theme_light()
+```
+
+```{r}
+ggplot(metrics_hq) +
+  geom_density(aes(x=meanSCC)) + 
+  xlab("meanSCC") +
+  ggtitle("Density plot for meanSCC distribution") + 
+  theme_light()
+```
+
+```{r}
+meanSCC_treshold <- 0.55
+classification <- rep('Party', length(metrics_hq$meanSCC))
+classification[metrics_hq$meanSCC <= meanSCC_treshold] <- 'Date'
+#assigning the classification of party/date hub to the stats dataframe containing all infos for hubs. 
+stats_hq[seq(1,length(hubs_hq)), 'classification'] <- classification
+```
+
+```{r}
+ggplot(stats_hq[!is.na(stats_hq$classification),]) +
+  geom_histogram(aes(x=classification, fill=classification), stat = "count") + 
+  ggtitle("Node counts by party/date") + 
+  ylab("Count") + 
+  xlab("Type") +
+  theme_bw()
+```
+
+```{r}
+normalized_counts <- function(corr_vector) {
+  hist <- hist(corr_vector, breaks=intervals, plot = F)
+  count <- hist$counts/sum(hist$counts)
+  names(count) <- hist$mids
+  return(count)
+}
+
+hubs_counts_hq <- sapply(spearmans_vector_hq, normalized_counts)
+color <- ifelse((classification == 'Date'), "red", "blue")
+pca_plot <- prcomp(t(hubs_counts_hq), scale = F, center = F)
+autoplot(pca_plot, colour = color, label =TRUE , shape = F)
+```
+
+```{r}
+pcs <- paste0("PC", seq(1,dim(pca_plot$rotation)[2]), sep = "")
+pcs <- factor(pcs, level = pcs)
+var = summary(pca_plot)$importance[2,]
+variances <- as.data.frame(list(pc = pcs,
+                                var = var))
+ggplot(variances, aes(x = pc, y = var, group = 1)) + 
+  geom_line() +
+  geom_point() + 
+  theme_light()
+```
+
+```{r}
+U<-umap(t(hubs_counts_hq), pca=15, n_components = 3)
+plot3d(x=U[,1],y=U[,2],z=U[,3], col=color)
+rglwidget()
+```
+
+```{r}
+party_hubs_hq <- as.list(filter(metrics_hq, metrics_hq$meanSCC > meanSCC_treshold))[1]
+date_hubs_hq<- as.list(filter(metrics_hq, metrics_hq$meanSCC <= meanSCC_treshold))[1]
+```
+
+```{r}
+#change min_exp and plot
+minExp <- 250
+ECOEXP_mq <-as.data.frame(cbind(Ecoli_PPI$protein1[Ecoli_PPI$experiments>minExp],
+                            Ecoli_PPI$protein2[Ecoli_PPI$experiments>minExp],                        
+                            Ecoli_PPI$experiments[Ecoli_PPI$experiments>minExp]))
+colnames(ECOEXP_mq)<-c("Protein1","Protein2","Confidence")
+ECOEXP_mq$Confidence<-as.numeric(ECOEXP_mq$Confidence)
+
+```
+
+```{r, echo=FALSE}
+#verified interactions only
+eco_ppi_graph_mq <- graph.data.frame(ECOEXP_mq)
+eco_ppi_graph_mq <- simplify(eco_ppi_graph_mq) 
+eco_ppi_graph_mq
+```
+
+```{r}
+###define centrality measures for betweenness and degree
+
+eco_ppi_mq_betwennes <-betweenness(eco_ppi_graph_mq,directed=FALSE)
+
+eco_ppi_mq_degree<- degree(eco_ppi_graph_mq)
+
+### defining threshold  
+treshold <- 0.9 
+
+betwenness_treshold <-quantile(eco_ppi_mq_betwennes,treshold)
+betwenness_treshold <- round(betwenness_treshold, digits = 2)
+
+degree_treshold <-quantile(eco_ppi_mq_degree,treshold)
+
+#categorize nodes 
+
+BH<-V(eco_ppi_graph_mq)$name[eco_ppi_mq_betwennes>=betwenness_treshold & eco_ppi_mq_degree>=degree_treshold]
+
+#non-bottleneck hubs (NBH)
+NBH<-V(eco_ppi_graph_mq)$name[eco_ppi_mq_betwennes<betwenness_treshold & eco_ppi_mq_degree>=degree_treshold]
+
+#bottleneck non-hub (BNH)
+BNH<-V(eco_ppi_graph_mq)$name[eco_ppi_mq_betwennes>=betwenness_treshold & eco_ppi_mq_degree<degree_treshold]
+
+#non bottleneck non hubs NBNH
+NBNH<-V(eco_ppi_graph_mq)$name[eco_ppi_mq_betwennes<betwenness_treshold & eco_ppi_mq_degree<degree_treshold]
+
+```
+
+The distribution of each centrality measure can be computted.
+
+```{r}
+nodes_names <- c(BH, NBH, BNH, NBNH)
+stats_mq <- data.frame(row.names = nodes_names, 
+                    list(type = c(rep('BH', length(BH)),
+                                  rep('NBH', length(NBH)),
+                                  rep('BNH', length(BNH)),
+                                  rep('NBNH', length(NBNH))),
+                    betwenness = eco_ppi_mq_betwennes[nodes_names],
+                    degree = eco_ppi_mq_degree[nodes_names]))
+                    
+centralities_mq <- cbind(stats_mq$degree, stats_mq$betwenness)
+```
+
+```{r}
+#calculate the mean for each group and for each stat
+mean_deg <- ddply(stats_mq, 'type', summarise, grp.mean_deg = mean(degree))
+mean_bet <- ddply(stats_mq, 'type', summarise, grp.mean_bet = mean(betwenness))
+
+degree_distr <- ggplot(stats_mq, aes(x=degree, fill=type)) +
+  geom_density(alpha = 0.4)+
+  geom_vline(data=mean_deg, aes(xintercept=grp.mean_deg, color=type),
+             linetype="dashed") +
+  geom_vline(xintercept = degree_treshold, size = 1 ) +
+  geom_label(aes(x=degree_treshold +22, y = 0.8, label =paste('Degree treshold: ', degree_treshold))) +
+  xlab('Degree') +
+  ylab('Density') + labs(title = 'Type') + 
+  theme_light() + 
+  theme(legend.title = element_text(color = 'blue', size  = 10), legend.background = element_rect((fill = 'lightblue'), color = NA), ) 
+
+
+betwennes_distr <- ggplot(stats_mq, aes(x=betwenness, color=type)) +
+  geom_freqpoly() + 
+  geom_vline(xintercept = betwenness_treshold, size = 1) + 
+  geom_label(aes(x=betwenness_treshold + 17000, y=350, label=paste('Betweennes treshold: ', betwenness_treshold))) +
+  xlab('Betwenennes') +
+  ylab('Density') + 
+  theme_light() +
+  theme(legend.title = element_text(color = 'blue', size  = 10), legend.background = element_rect((fill = 'lightblue'), color = NA), )
+
+
+degree_distr
+betwennes_distr
+
+```
+
+```{r, echo=FALSE, warning=FALSE}
+
+degree_violin <- ggplot(stats_mq[stats_mq$type == "NBNH", ], aes(x = type, y = degree, fill = type)) +     
+  geom_violin(outlier.shape = NA) + 
+  ylab('Degree') +
+  xlab('Type') +
+  ylim(NA,15)
+  theme_light()
+
+degree_violin
+                              
+```
+
+```{r}
+#computing neighbors and retrieving neighbor genes for BH 
+BH_neighbors <- neighborhood(eco_ppi_graph_mq,1, BH)
+NBH_neighbors <- neighborhood(eco_ppi_graph_mq, 1, NBH)
+BNH_neighbors <- neighborhood(eco_ppi_graph_mq, 1, BNH)
+NBNH_neighbors <- neighborhood(eco_ppi_graph_mq, 1, NBNH)
+
+#remove hubs from BH neighbors
+for (i in 1:length(BH_neighbors)) {
+  BH_neighbors[[i]] <- BH_neighbors[[i]][BH_neighbors[[i]]$name != BH[i]]
+}
+
+#remove hubs from NBH neighbors
+for (i in 1:length(NBH_neighbors)) {
+  NBH_neighbors[[i]] <- NBH_neighbors[[i]][NBH_neighbors[[i]]$name != NBH[i]]
+}
+
+#remove hubs from BNH neighbors
+for (i in 1:length(BNH_neighbors)) {
+  BNH_neighbors[[i]] <- BNH_neighbors[[i]][BNH_neighbors[[i]]$name != BNH[i]]
+}
+
+#remove hubs from NBNH neighbors
+for (i in 1:length(NBNH_neighbors)) {
+  NBNH_neighbors[[i]] <- NBNH_neighbors[[i]][NBNH_neighbors[[i]]$name != NBNH[i]]
+}
+
+```
+
+```{r, include=FALSE}
+
+intervals <- seq(-1.05, 1.05, 0.1)
+spearmansBH<-matrix(0,ncol=length(intervals)-1,nrow=length(BH))
+
+#for each interval the number of correlations falling within are calculated and then normalized for the total number of correlation values
+for (i in 1:length(BH)) 
+{
+  extractedrows <- expression_data[,match(BH_neighbors[[i]]$name, colnames(expression_data))]
+  BH_expression <- expression_data[, which(BH[i] ==  colnames(expression_data))]
+  extractedrows <- extractedrows[BH_expression >= mean(BH_expression),]
+  spearmans <-cor(extractedrows, method = 'spearman')
+  spearmans <-spearmans[upper.tri(spearmans)]
+  h_BH<-hist(spearmans,breaks= intervals)
+  spearmansBH[i,]<-h_BH$counts/sum(h_BH$counts)
+}
+```
+
+```{r, echo = FALSE}
+colnames(spearmansBH)<- h_BH$mids
+pheatmap(spearmansBH,cluster_cols = FALSE, labels_row = BH, main = 'Spearman correlations between Bottleneck hub neighbors', display_numbers = T, fontsize_number = 6)
+```
+
+```{r, echo = FALSE}
+plot(h_BH$mids,colMeans(spearmansBH), xlab = 'Correlation', ylab = 'Value', main = 'Correlation in BH')
+points(h_BH$mids,colMeans(spearmansBH),pch = 19, col = "red")
+```
+
+```{r, include = FALSE}
+spearmansNBH<-matrix(0,ncol=length(intervals)-1,nrow=length(NBH_neighbors))
+for (i in 1:length(NBH_neighbors)) 
+{
+  extractedrows_NBH <- expression_data[,match(NBH_neighbors[[i]]$name, colnames(expression_data))]
+  NBH_expression <- expression_data[, which(NBH[i] ==  colnames(expression_data))] 
+  extractedrows_NBH <- extractedrows_NBH[NBH_expression >= mean(NBH_expression), ]
+  spearmans<-cor(extractedrows_NBH, method = 'spearman')
+  spearmans<-spearmans[upper.tri(spearmans)]
+  h_NBH<-hist(spearmans,breaks= intervals)
+  spearmansNBH[i,]<-h_NBH$counts/sum(h_NBH$counts)
+}
+
+```
+
+```{r, echo=FALSE}
+colnames(spearmansNBH)<-h_NBH$mids
+pheatmap(spearmansNBH,cluster_cols = FALSE, labels_row = NBH, main = 'Spearman correlations between Non-Bottleneck hub neighbors', display_numbers = T, fontsize_number = 6)
+```
+
+```{r, echo = FALSE}
+plot(h_NBH$mids,colMeans(spearmansNBH), main = 'Correlation in NBH', xlab = 'Correlation', ylab = 'Value')
+points(h_NBH$mids,colMeans(spearmansNBH),pch = 19, col = "lightblue")
+```
+
+```{r, include = FALSE}
+spearmansBNH<-matrix(0,ncol=length(intervals)-1,nrow=length(BNH_neighbors))
+for (i in 1:length(BNH_neighbors)) 
+{
+  extractedrows_BNH <- expression_data[,match(BNH_neighbors[[i]]$name, colnames(expression_data))]
+  BNH_expression <- expression_data[, which(BNH[i] ==  colnames(expression_data))] 
+  extractedrows_BNH <- extractedrows_BNH[BNH_expression >= mean(BNH_expression), ]
+  spearmans<-cor(extractedrows_BNH, method = 'spearman')
+  spearmans<-spearmans[upper.tri(spearmans)]
+  h_BNH<-hist(spearmans,breaks= intervals)
+  spearmansBNH[i,]<-h_BNH$counts/sum(h_BNH$counts)
+}
+```
+
+```{r, echo = FALSE}
+#check it visually
+colnames(spearmansBNH)<-h_BNH$mids
+pheatmap(spearmansBNH,cluster_cols = FALSE, labels_row = BNH,  main = 'Spearman correlations between Bottleneck non-hub neighbors', display_numbers = T, fontsize_number = 6)
+```
+
+```{r}
+#NBNH contains neighborhood with only one interactor. These can be removed 
+mask <- array()
+for (i in 1:length(NBNH_neighbors)) {
+  mask[i] <- length(NBNH_neighbors[[i]]) != 1
+}
+NBNH_neighbors <- NBNH_neighbors[mask]
+```
+
+```{r, include = FALSE}
+
+spearmansNBNH<-matrix(0,ncol=length(intervals)-1,nrow=length(NBNH_neighbors))
+for (i in 1:length(NBNH_neighbors)) 
+{
+  extractedrows_NBNH <- expression_data[,match(NBNH_neighbors[[i]]$name, colnames(expression_data))]
+  NBNH_expression <- expression_data[, which(NBNH[i] ==  colnames(expression_data))] 
+  extractedrows_NBNH <- extractedrows_NBNH[NBNH_expression >= mean(NBNH_expression), ]
+  spearmans<-cor(extractedrows_NBNH, method = 'spearman')
+  spearmans<-spearmans[upper.tri(spearmans)]
+  h_NBNH<-hist(spearmans,breaks= intervals)
+  spearmansNBNH[i,]<-h_NBNH$counts/sum(h_NBNH$counts)
+}
+
+
+```
+
+```{r, echo = FALSE}
+colnames(spearmansNBNH)<- h_NBNH$mids
+pheatmap(spearmansNBNH,cluster_cols = FALSE,  main = 'Spearman correlations between Bottleneck non-hub neighbors')
+```
+
+```{r, include= FALSE}
+hubs_mq <- c(BH,NBH)
+hubs_neighbors_mq <- neighborhood(eco_ppi_graph_mq, 1, hubs_mq)
+corr_matr<- function (neighbors, method = 'spearman'){
+  extractedrows <- expression_data[, na.omit(match(neighbors$name[2:length(neighbors)], colnames(expression_data)))]
+  hubs_expression <- expression_data[, which(neighbors$name[1] == colnames(expression_data))]
+  extractedrows <- extractedrows[hubs_expression >= mean(hubs_expression),]
+  correlations <- cor(extractedrows, method=method)
+  return(correlations)
+}
+
+spearmans_hubs_mq <- lapply(hubs_neighbors_mq, corr_matr, "spearman")
+spearmans_vector_mq <- lapply(spearmans_hubs_mq, function (matrix) {matrix[upper.tri(matrix)]})
+names(spearmans_vector_mq) <- hubs_mq
+
+
+```
+
+```{r, echo = FALSE}
+
+metrics_mq <- data.frame(list(hubs_mq = hubs_mq), 
+                      type = stats_mq[hubs_mq, 'type'],
+                      meanSCC = sapply(spearmans_vector_mq, mean),
+                      varSCC = sapply(spearmans_vector_mq, var))
+
+ggplot(metrics_mq) + 
+  geom_density(aes(x=meanSCC, fill=type)) +
+  ggtitle("Mean SCC among interactors") + 
+  ylab("Density") + 
+  xlab("meanSCC") +
+  theme_light()
+```
+
+```{r}
+ggplot(metrics_mq) + 
+  geom_density(aes(x=varSCC, fill=type)) +
+  ggtitle("varSCC among interactors") + 
+  ylab("Density") + 
+  xlab("varSCC") +
+  theme_light()
+```
+
+```{r}
+ggplot(metrics_mq) +
+  geom_density(aes(x=meanSCC)) + 
+  xlab("meanSCC") +
+  ggtitle("Density plot for meanSCC distribution") + 
+  theme_light()
+```
+
+```{r}
+#change min_exp and plot
+minExp <- 0
+ECOEXP_lq <-as.data.frame(cbind(Ecoli_PPI$protein1[Ecoli_PPI$experiments>minExp],
+                            Ecoli_PPI$protein2[Ecoli_PPI$experiments>minExp],                        
+                            Ecoli_PPI$experiments[Ecoli_PPI$experiments>minExp]))
+colnames(ECOEXP_lq)<-c("Protein1","Protein2","Confidence")
+ECOEXP_lq$Confidence<-as.numeric(ECOEXP_lq$Confidence)
+
+```
+
+```{r, echo=FALSE}
+#verified interactions only
+eco_ppi_graph_lq <- graph.data.frame(ECOEXP_lq)
+eco_ppi_graph_lq <- simplify(eco_ppi_graph_lq) 
+eco_ppi_graph_lq
+```
+
+```{r}
+###define centrality measures for betweenness and degree
+
+eco_ppi_lq_betwennes <-betweenness(eco_ppi_graph_lq,directed=FALSE)
+
+eco_ppi_lq_degree<- degree(eco_ppi_graph_lq)
+
+### defining threshold  
+treshold <- 0.9 
+
+betwenness_treshold <-quantile(eco_ppi_lq_betwennes,treshold)
+betwenness_treshold <- round(betwenness_treshold, digits = 2)
+
+degree_treshold <-quantile(eco_ppi_lq_degree,treshold)
+
+#categorize nodes 
+
+BH<-V(eco_ppi_graph_lq)$name[eco_ppi_lq_betwennes>=betwenness_treshold & eco_ppi_lq_degree>=degree_treshold]
+
+#non-bottleneck hubs (NBH)
+NBH<-V(eco_ppi_graph_lq)$name[eco_ppi_lq_betwennes<betwenness_treshold & eco_ppi_lq_degree>=degree_treshold]
+
+#bottleneck non-hub (BNH)
+BNH<-V(eco_ppi_graph_lq)$name[eco_ppi_lq_betwennes>=betwenness_treshold & eco_ppi_lq_degree<degree_treshold]
+
+#non bottleneck non hubs NBNH
+NBNH<-V(eco_ppi_graph_lq)$name[eco_ppi_lq_betwennes<betwenness_treshold & eco_ppi_lq_degree<degree_treshold]
+
+```
+
+```{r}
+nodes_names_lq <- c(BH, NBH, BNH, NBNH)
+stats_lq <- data.frame(row.names = nodes_names_lq, 
+                    list(type = c(rep('BH', length(BH)),
+                                  rep('NBH', length(NBH)),
+                                  rep('BNH', length(BNH)),
+                                  rep('NBNH', length(NBNH))),
+                    betwenness = eco_ppi_lq_betwennes[nodes_names_lq],
+                    degree = eco_ppi_lq_degree[nodes_names_lq]))
+                    
+centralities_lq <- cbind(stats_lq$degree, stats_lq$betwenness)
+```
+
+```{r}
+#calculate the mean for each group and for each stat
+mean_deg <- ddply(stats_lq, 'type', summarise, grp.mean_deg = mean(degree))
+mean_bet <- ddply(stats_lq, 'type', summarise, grp.mean_bet = mean(betwenness))
+
+degree_distr <- ggplot(stats_lq, aes(x=degree, fill=type)) +
+  geom_density(alpha = 0.4)+
+  geom_vline(data=mean_deg, aes(xintercept=grp.mean_deg, color=type),
+             linetype="dashed") +
+  geom_vline(xintercept = degree_treshold, size = 1 ) +
+  geom_label(aes(x=degree_treshold +22, y = 0.8, label =paste('Degree treshold: ', degree_treshold))) +
+  xlab('Degree') +
+  ylab('Density') + labs(title = 'Type') + 
+  theme_light() + 
+  theme(legend.title = element_text(color = 'blue', size  = 10), legend.background = element_rect((fill = 'lightblue'), color = NA), ) 
+
+
+betwennes_distr <- ggplot(stats_lq, aes(x=betwenness, color=type)) +
+  geom_freqpoly() + 
+  geom_vline(xintercept = betwenness_treshold, size = 1) + 
+  geom_label(aes(x=betwenness_treshold + 17000, y=350, label=paste('Betweennes treshold: ', betwenness_treshold))) +
+  xlab('Betwenennes') +
+  ylab('Density') + 
+  theme_light() +
+  theme(legend.title = element_text(color = 'blue', size  = 10), legend.background = element_rect((fill = 'lightblue'), color = NA), )
+
+
+degree_distr
+betwennes_distr
+
+```
+
+```{r, echo = FALSE}
+
+degree_violin <- ggplot(stats_lq[stats_lq$type == "NBNH", ], aes(x = type, y = degree, fill = type)) +     
+  geom_violin(outlier.shape = NA) + 
+  ylab('Degree') +
+  xlab('Type') +
+  ylim(NA,25)
+  theme_light()
+
+degree_violin
+                              
+```
+
+```{r}
+#computing neighbors and retrieving neighbor genes for BH 
+BH_neighbors <- neighborhood(eco_ppi_graph_lq,1, BH)
+NBH_neighbors <- neighborhood(eco_ppi_graph_lq, 1, NBH)
+BNH_neighbors <- neighborhood(eco_ppi_graph_lq, 1, BNH)
+NBNH_neighbors <- neighborhood(eco_ppi_graph_lq, 1, NBNH)
+
+#remove hubs from BH neighbors
+for (i in 1:length(BH_neighbors)) {
+  BH_neighbors[[i]] <- BH_neighbors[[i]][BH_neighbors[[i]]$name != BH[i]]
+}
+
+#remove hubs from NBH neighbors
+for (i in 1:length(NBH_neighbors)) {
+  NBH_neighbors[[i]] <- NBH_neighbors[[i]][NBH_neighbors[[i]]$name != NBH[i]]
+}
+
+#remove hubs from BNH neighbors
+for (i in 1:length(BNH_neighbors)) {
+  BNH_neighbors[[i]] <- BNH_neighbors[[i]][BNH_neighbors[[i]]$name != BNH[i]]
+}
+
+#remove hubs from NBNH neighbors
+for (i in 1:length(NBNH_neighbors)) {
+  NBNH_neighbors[[i]] <- NBNH_neighbors[[i]][NBNH_neighbors[[i]]$name != NBNH[i]]
+}
+
+```
+
+```{r, include=FALSE}
+
+intervals <- seq(-1.05, 1.05, 0.1)
+spearmansBH<-matrix(0,ncol=length(intervals)-1,nrow=length(BH))
+
+#for each interval the number of correlations falling within are calculated and then normalized for the total number of correlation values
+for (i in 1:length(BH)) 
+{
+  extractedrows <- expression_data[,match(BH_neighbors[[i]]$name, colnames(expression_data))]
+  BH_expression <- expression_data[, which(BH[i] ==  colnames(expression_data))]
+  extractedrows <- extractedrows[BH_expression >= mean(BH_expression),]
+  spearmans <-cor(extractedrows, method = 'spearman')
+  spearmans <-spearmans[upper.tri(spearmans)]
+  h_BH<-hist(spearmans,breaks= intervals)
+  spearmansBH[i,]<-h_BH$counts/sum(h_BH$counts)
+}
+```
+
+```{r, echo = FALSE}
+colnames(spearmansBH)<- h_BH$mids
+pheatmap(spearmansBH,cluster_cols = FALSE, main = 'Spearman correlations between Bottleneck hub neighbors', display_numbers = T, fontsize_number = 6)
+```
+
+```{r, echo = FALSE}
+plot(h_BH$mids,colMeans(spearmansBH), xlab = 'Correlation', ylab = 'Value', main = 'Correlation in BH interactors')
+points(h_BH$mids,colMeans(spearmansBH),pch = 19, col = "red")
+```
+
+```{r, include = FALSE}
+spearmansNBH<-matrix(0,ncol=length(intervals)-1,nrow=length(NBH_neighbors))
+for (i in 1:length(NBH_neighbors)) 
+{
+  extractedrows_NBH <- expression_data[,match(NBH_neighbors[[i]]$name, colnames(expression_data))]
+  NBH_expression <- expression_data[, which(NBH[i] ==  colnames(expression_data))] 
+  extractedrows_NBH <- extractedrows_NBH[NBH_expression >= mean(NBH_expression), ]
+  spearmans<-cor(extractedrows_NBH, method = 'spearman')
+  spearmans<-spearmans[upper.tri(spearmans)]
+  h_NBH<-hist(spearmans,breaks= intervals)
+  spearmansNBH[i,]<-h_NBH$counts/sum(h_NBH$counts)
+}
+
+```
+
+```{r, echo=FALSE}
+colnames(spearmansNBH)<-h_NBH$mids
+pheatmap(spearmansNBH,cluster_cols = FALSE, labels_row = NBH, main = 'Spearman correlations between Non-Bottleneck hub neighbors', display_numbers = T, fontsize_number = 6)
+```
+
+```{r, echo = FALSE}
+plot(h_NBH$mids,colMeans(spearmansNBH), main = 'Correlation in NBH interactors', xlab = 'Correlation', ylab = 'Value')
+points(h_NBH$mids,colMeans(spearmansNBH),pch = 19, col = "lightblue")
+```
+
+```{r, include = FALSE}
+spearmansBNH<-matrix(0,ncol=length(intervals)-1,nrow=length(BNH_neighbors))
+for (i in 1:length(BNH_neighbors)) 
+{
+  extractedrows_BNH <- expression_data[,match(BNH_neighbors[[i]]$name, colnames(expression_data))]
+  BNH_expression <- expression_data[, which(BNH[i] ==  colnames(expression_data))] 
+  extractedrows_BNH <- extractedrows_BNH[BNH_expression >= mean(BNH_expression), ]
+  spearmans<-cor(extractedrows_BNH, method = 'spearman')
+  spearmans<-spearmans[upper.tri(spearmans)]
+  h_BNH<-hist(spearmans,breaks= intervals)
+  spearmansBNH[i,]<-h_BNH$counts/sum(h_BNH$counts)
+}
+```
+
+```{r, echo = FALSE}
+#check it visually
+colnames(spearmansBNH)<-h_BNH$mids
+pheatmap(spearmansBNH,cluster_cols = FALSE, labels_row = BNH,  main = 'Spearman correlations between Bottleneck non-hub neighbors', display_numbers = T, fontsize_number = 6)
+```
+
+```{r}
+mask <- array()
+for (i in 1:length(NBNH_neighbors)) {
+  mask[i] <- length(NBNH_neighbors[[i]]) != 1
+}
+NBNH_neighbors <- NBNH_neighbors[mask]
+```
+
+```{r, include = FALSE}
+
+spearmansNBNH<-matrix(0,ncol=length(intervals)-1,nrow=length(NBNH_neighbors))
+for (i in 1:length(NBNH_neighbors)) 
+{
+  extractedrows_NBNH <- expression_data[,match(NBNH_neighbors[[i]]$name, colnames(expression_data))]
+  NBNH_expression <- expression_data[, which(NBNH[i] ==  colnames(expression_data))] 
+  extractedrows_NBNH <- extractedrows_NBNH[NBNH_expression >= mean(NBNH_expression), ]
+  spearmans<-cor(extractedrows_NBNH, method = 'spearman')
+  spearmans<-spearmans[upper.tri(spearmans)]
+  h_NBNH<-hist(spearmans,breaks= intervals)
+  spearmansNBNH[i,]<-h_NBNH$counts/sum(h_NBNH$counts)
+}
+
+
+```
+
+```{r, echo = FALSE}
+colnames(spearmansNBNH)<- h_NBNH$mids
+pheatmap(spearmansNBNH,cluster_cols = FALSE,  main = 'Spearman correlations between Bottleneck non-hub neighbors')
+```
+
+```{r, include= FALSE}
+hubs_lq <- c(BH,NBH)
+hubs_neighbor_lq <- neighborhood(eco_ppi_graph_lq, 1, hubs_lq)
+
+spearmans_hubs_lq <- lapply(hubs_neighbor_lq, corr_matr, "spearman")
+spearmans_vector_lq <- lapply(spearmans_hubs_lq, function (matrix) {matrix[upper.tri(matrix)]})
+names(spearmans_vector_lq) <- hubs_lq
+
+
+```
+
+```{r, echo = FALSE}
+
+metrics_lq <- data.frame(list(hubs_lq = hubs_lq), 
+                      type = stats_lq[hubs_lq, 'type'],
+                      meanSCC = sapply(spearmans_vector_lq, mean),
+                      varSCC = sapply(spearmans_vector_lq, var))
+
+ggplot(metrics_lq) + 
+  geom_density(aes(x=meanSCC, fill=type)) +
+  ggtitle("Mean SCC among interactors") + 
+  ylab("Density") + 
+  xlab("meanSCC") +
+  theme_light()
+```
+
+```{r, echo = FALSE}
+ggplot(metrics_lq[metrics_lq$type == "BH", ]) + 
+  geom_density(aes(x=meanSCC, fill=type)) +
+  ggtitle("Mean SCC for BH") + 
+  ylab("Density") + 
+  xlab("meanSCC") +
+  theme_light()
+```
+
+```{r, echo = FALSE}
+ggplot(metrics_lq) + 
+  geom_density(aes(x=varSCC, fill=type)) +
+  ggtitle("varSCC among interactors") + 
+  ylab("Density") + 
+  xlab("varSCC") +
+  theme_light()
+```
+
+```{r, echo =FALSE}
+ggplot(metrics_lq) +
+  geom_density(aes(x=meanSCC)) + 
+  xlab("meanSCC") +
+  ggtitle("Density plot for meanSCC distribution") + 
+  theme_light()
+```
+
+```{r}
+#the two peaks in NBH meanSCC distribution are divided at 0.5.
+meanSCC_treshold_BH <- 0.5
+#the two peaks in NBH meanSCC distribution are divided at 0.6.
+meanSCC_treshold_NBH <- 0.6
+
+metrics_BH <- metrics_lq[metrics_lq$type == "BH", ]
+metrics_NBH <- metrics_lq[metrics_lq$type == "NBH", ]
+classification_BH <- rep('Party', length(metrics_BH$meanSCC))
+classification_NBH <- rep('Party', length(metrics_NBH$meanSCC))
+classification_BH[metrics_BH$meanSCC <= meanSCC_treshold_BH] <- 'Date'
+classification_NBH[metrics_NBH$meanSCC <= meanSCC_treshold_NBH] <- 'Date'
+#assigning the classification of party/date hub to the stats dataframe containing all infos for hubs. 
+stats_lq[seq(1,length(BH)), 'classification'] <- classification_BH
+stats_lq[seq(1,length(NBH)), 'classification'] <- classification_NBH
+
+```
+
+```{r}
+ggplot(stats_lq[!is.na(stats_lq$classification_BH),]) +
+  geom_histogram(aes(x=classification_BH, fill=classification_BH), stat = "count") + 
+  ggtitle("Node counts for BH by party/date") + 
+  ylab("Count") + 
+  xlab("Type") +
+  theme_bw()
+
+ggplot(stats_lq[!is.na(stats_lq$classification_NBH),]) +
+  geom_histogram(aes(x=classification_NBH, fill=classification_NBH), stat = "count") + 
+  ggtitle("Node counts for NBH by party/date") + 
+  ylab("Count") + 
+  xlab("Type") +
+  theme_bw()
+```
+
+```{r,echo=FALSE}
+spearmans_BH <- lapply(BH_neighbors, corr_matr, "spearman")
+spearmans_vector_BH <- lapply(spearmans_BH, function (matrix) {matrix[upper.tri(matrix)]})
+names(spearmans_BH) <- BH
+
+spearmans_NBH <- lapply(NBH_neighbors, corr_matr, "spearman")
+spearmans_vector_NBH <- lapply(spearmans_NBH, function (matrix) {matrix[upper.tri(matrix)]})
+names(spearmans_NBH) <- NBH
+
+BH_counts <- sapply(spearmans_vector_BH, normalized_counts)
+NBH_counts <- sapply(spearmans_vector_NBH, normalized_counts)
+
+color_BH <- ifelse((classification_BH == 'Date'), "red", "blue")
+color_NBH <- ifelse((classification_NBH == 'Date'), "red", "blue")
+
+
+pca_plot_BH <- prcomp(t(BH_counts), scale = F, center = F)
+pca_plot_NBH <- prcomp(t(NBH_counts), scale = F, center = F)
+
+autoplot(pca_plot_BH, colour = color_BH, label =TRUE , shape = F)
+autoplot(pca_plot_NBH, colour = color_NBH, label =TRUE , shape = F)
+
+```
+
+```{r, echo=FALSE}
+pcs <- paste0("PC", seq(1,dim(pca_plot_BH$rotation)[2]), sep = "")
+pcs <- factor(pcs, level = pcs)
+var = summary(pca_plot_BH)$importance[2,]
+variances <- as.data.frame(list(pc = pcs,
+                                var = var))
+ggplot(variances, aes(x = pc, y = var, group = 1)) + 
+  geom_line() +
+  geom_point() + 
+  theme_light()
+
+pcs <- paste0("PC", seq(1,dim(pca_plot_NBH$rotation)[2]), sep = "")
+pcs <- factor(pcs, level = pcs)
+var = summary(pca_plot_NBH)$importance[2,]
+variances <- as.data.frame(list(pc = pcs,
+                                var = var))
+ggplot(variances, aes(x = pc, y = var, group = 1)) + 
+  geom_line() +
+  geom_point() + 
+  theme_light()
+```
+
+```{r}
+U<-umap(t(BH_counts), pca=6, n_components = 3)
+plot3d(x=U[,1],y=U[,2],z=U[,3], col=color_BH)
+rglwidget()
+
+U<-umap(t(NBH_counts), pca=6, n_components = 3)
+plot3d(x=U[,1],y=U[,2],z=U[,3], col=color_NBH)
+rglwidget()
+```
+
+```{r}
+party_hubs_BH <- as.list(filter(metrics_BH, metrics_BH$meanSCC > meanSCC_treshold_BH))[1]
+date_hubs_BH <- as.list(filter(metrics_BH, metrics_BH$meanSCC <= meanSCC_treshold_BH))[1]
+
+party_hubs_NBH <- as.list(filter(metrics_NBH, metrics_NBH$meanSCC > meanSCC_treshold_NBH))[1]
+date_hubs_NBH <- as.list(filter(metrics_NBH, metrics_NBH$meanSCC <= meanSCC_treshold_NBH))[1]
+```
+
+```{r}
+library(GOSemSim)
+
+```
+
+$$
+p(t) = \frac{n_{t}}N|t^i \in \{t,childrenoft\}
+$$ where *nt'* is the number of term t', and *N* is the total number of GO corpus.
+
+
+$$
+IC(t) = -log(p(t))
+$$ 
+
+$$
+sim_{Resnik}(t_1,t_2) = IC(MICA)
+$$
+
+
+$$
+sim_{avg}(g1,g2) = \frac{\sum_{i = 1}^{m} \sum_{j = 1}^{n} sim(go_{1i},go_{2j})}{\ m * n}
+$$
+
+```{r}
+Eck12_GO <- godata('org.EcK12.eg.db', ont="BP", keytype = "SYMBOL")
+```
+
+```{r}
+id_to_name <- function (neighbor) {
+  names <- A[match(neighbor$name, A$`Protein ID`),1]
+  neighbor <- vector()
+  neighbor <- names
+  return(neighbor)
+}
+
+hubs_neighbors_name <- lapply(hubs_neighbors_hq, id_to_name)
+```
+
+```{r}
+find_party_hubs <- function (neighborhood, treshold) {
+  matrix <- mgeneSim(neighborhood, semData=Eck12_GO, measure="Resnik", combine="avg", verbose=FALSE)
+  party_hubs_semsim <- names(mean(rowSums(matrix)[1]) > treshold)
+  return(party_hubs_semsim)
+}
+
+find_date_hubs <- function (neighborhood, treshold) {
+  matrix <- mgeneSim(neighborhood, semData=Eck12_GO, measure="Resnik", combine="avg", verbose=FALSE)
+  date_hubs_semsim = vector()
+  date_hubs_semsim <- c(date_hubs_semsim, names(mean(rowSums(matrix)[1]) <= treshold))
+  return(date_hubs_semsim)
+}
+
+
+
+```
+
+
+```{r, eval = FALSE}
+party_h_semsim <- lapply(hubs_neighbors_name, find_party_hubs, 0.5)
+date_h_semsim <- lapply(hubs_neighbors_name, find_date_hubs, 0.5)
+```
+
+## Biologically validate HQ-PPI Analysis
+
+```{r}
+#Create a function that returns all the names of each node identified by protein ID 
+get_names <- function(nodes){
+  return(A[match(nodes, A$`Protein ID`),1])
+}
+
+metrics_hq["name"] <- get_names(metrics_hq$hubs)
+metrics_hq <- metrics_hq %>% relocate(name)
+#plot the top scoring genes for expression in correlation values, which should represent party hubs
+metrics_hq %>% arrange(desc(meanSCC)) %>% head()
+```
+
+```{r}
+
+#get the neighborhood from the name of the hub most correlated in expression with its neighbhors
+get_hub_neighs <- function(hub){
+  neigh <- hubs_neighbors_hq[[match(hub, hubs_hq)]]$name
+  return(get_names(neigh))
+}
+
+metrics_hq <- metrics_hq %>% arrange(desc(meanSCC))
+get_hub_neighs(metrics_hq$hubs[1])
+```
+
+
+```{r, echo = FALSE}
+get_hub_neighs(metrics_hq$hubs[length(metrics_hq) - 1])
+```
